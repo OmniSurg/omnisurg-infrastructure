@@ -1,0 +1,52 @@
+# Internal engineering docs: the public repo ships only a minimal root README and
+# the non-.md API contracts. Every internal markdown file (CLAUDE.md, runbooks,
+# ADRs, standards, resume/handoff notes) stays local and never reaches the public
+# repo (publishing hygiene HG-B7). The root README is the single committed exception.
+*.md
+CLAUDE.md
+!/README.md
+
+.env
+.env.local
+.deploy-secrets.env
+# Per-environment deploy stacks: the real filled env is a secret; the rendered
+# per-service env files never belong in the repo. The committed contract is the
+# per-environment .env.example only.
+deploy/production/.env
+deploy/staging/.env
+deploy/*/.env
+deploy/*/env/
+smoke/credentials.json
+# Cross-service smoke: the money-loop plus tenant-isolation CST is a LOCAL
+# live-stack test asset, heavily coupled to the internal demo seed (customer
+# name, fixed ids, seeded test logins). It stays on disk for local dev and the
+# e2e gate but never reaches the public repo (deploy spec section 8.2, HG-B7).
+smoke/run.sh
+smoke/run_selftest.sh
+smoke/credentials.example.json
+# Internal seed fixtures: the demo path names the real first customer and carries
+# documented test logins and the fixed dev TOTP secret. It stays local only and
+# never reaches the public repo (deploy spec section 8.2). The public seed tree
+# ships only the mechanism plus the generic synthetic fixtures under seed/synthetic.
+seed/internal/
+*.tfstate
+*.tfstate.backup
+.terraform/
+# Terraform: only the *.example var file is committed. Real variable values
+# (Cloudflare token, ids, origin host) and the platform-specific lock file for
+# this validate-only config stay untracked.
+terraform/**/terraform.tfvars
+terraform/**/*.auto.tfvars
+terraform/**/.terraform.lock.hcl
+data/
+logs/
+go.work.sum
+SCRATCH.md
+NOTES.md
+.DS_Store
+.idea/
+.vscode/
+# Compiled stub binaries (default `go build` output in each stub dir, named after the dir)
+stubs/afrosoft/afrosoft
+stubs/paynow/paynow
+stubs/zimrate/zimrate

@@ -1,0 +1,42 @@
+# Traefik dynamic (file provider) configuration.
+#
+# Route the local BFF hosts to the admin-bff HTTP port (8093) on omnisurg_net.
+# The web apps do not exist yet, so api, admin, and any per-practice tenant
+# subdomain all route to the BFF API surface. One backend service (bff): the api
+# and admin routers are explicit, and a wildcard router forwards any
+# <practice>.omnisurg.localhost so a local tenant subdomain resolves without
+# hard coding a practice name.
+#
+# The file provider is used (not docker labels) because the Traefik docker
+# provider cannot reliably reach the Docker Desktop daemon socket on macOS
+# ("Failed to retrieve information of the docker client and server host"); the
+# file provider is daemon-independent and resolves the backend by the compose
+# service DNS name on omnisurg_net.
+http:
+  routers:
+    bff-api:
+      rule: "Host(`api.omnisurg.localhost`)"
+      entryPoints:
+        - web
+      service: bff
+    bff-admin:
+      rule: "Host(`admin.omnisurg.localhost`)"
+      entryPoints:
+        - web
+      service: bff
+    bff-tenant:
+      rule: 'HostRegexp(`^[a-z0-9-]+\.omnisurg\.localhost$`)'
+      entryPoints:
+        - web
+      service: bff
+
+  services:
+    bff:
+      loadBalancer:
+        servers:
+          # admin-bff is reachable by its compose service name on omnisurg_net.
+          - url: "http://admin-bff:8093"
+        healthCheck:
+          path: /healthz
+          interval: 10s
+          timeout: 3s

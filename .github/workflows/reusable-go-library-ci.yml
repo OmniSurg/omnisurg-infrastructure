@@ -1,0 +1,82 @@
+# Reusable CI for the OmniSurg shared Go LIBRARIES (omnisurg-go-common and
+# omnisurg-proto). Libraries have no deploy image, so this workflow builds,
+# vets, and tests the module and stops there. No ghcr push, no deploy.
+#
+# WHY A SEPARATE LIBRARY WORKFLOW: the service CI (reusable-go-service-ci.yml)
+# runs `make lint/generate-check/test/build` and, on a deploy branch, builds and
+# pushes a Docker image. The libraries have neither a service Makefile gate nor a
+# Dockerfile. proto also cannot run its local `make ci` in a public repo because
+# that runs `buf breaking` against a baseline tag that does not exist in the
+# fresh publish history. So the public library gate is a plain module build+test.
+# The richer local gates (golangci-lint on go-common, buf lint/breaking on proto)
+# stay developer-side.
+#
+# SHARED-MODULE RESOLUTION: go-common requires omnisurg-proto through a local
+# `replace => ../omnisurg-proto/gen/go` that only exists in a developer checkout.
+# In the isolated CI checkout that path is absent, so before building we drop the
+# local replace and pin the published version (proto is published before
+# go-common, so the tag resolves). proto itself requires neither shared module,
+# so the resolution step is a no-op there.
+name: reusable-go-library-ci
+
+on:
+  workflow_call:
+    inputs:
+      module_dir:
+        description: "Directory holding the module go.mod (proto lives in gen/go)."
+        required: false
+        type: string
+        default: "."
+      proto_version:
+        description: "Published omnisurg-proto/gen/go version to resolve."
+        required: false
+        type: string
+        default: v0.8.0
+      go_common_version:
+        description: "Published omnisurg-go-common version to resolve."
+        required: false
+        type: string
+        default: v0.2.3
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Library gate (build, vet, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.module_dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ inputs.module_dir }}/go.mod
+          cache: true
+          cache-dependency-path: ${{ inputs.module_dir }}/go.sum
+      - name: Resolve shared modules from published tags
+        env:
+          PROTO_VERSION: ${{ inputs.proto_version }}
+          GO_COMMON_VERSION: ${{ inputs.go_common_version }}
+        run: |
+          set -euo pipefail
+          # Drop EVERY local shared replace first (no-op if absent) so no dangling
+          # replace is left while a later go command loads the module graph, then
+          # pin only the versions this module actually requires.
+          go mod edit -dropreplace=github.com/OmniSurg/omnisurg-proto/gen/go \
+                      -dropreplace=github.com/OmniSurg/omnisurg-go-common
+          pin() {
+            if go mod edit -json | jq -e --arg p "$1" '.Require[]? | select(.Path == $p)' >/dev/null; then
+              go get "$1@$2"
+            fi
+          }
+          pin github.com/OmniSurg/omnisurg-proto/gen/go "$PROTO_VERSION"
+          pin github.com/OmniSurg/omnisurg-go-common "$GO_COMMON_VERSION"
+          go mod tidy
+      - name: go build
+        run: go build ./...
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...

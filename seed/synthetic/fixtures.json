@@ -1,0 +1,54 @@
+{
+  "_comment": "Generic synthetic seed fixtures for the public repo. Obviously fictional data: no real customer, no real person, no documented password, no fixed secret. The synthetic seed runner (seed-synthetic.sh) and the synthetic verifier (verify-synthetic.sh) both read this file, so the ids and amounts stay in one place. Staff identities and the tenant admin password are supplied at run time (never in this file).",
+  "tenant": {
+    "id": "f0000001-0000-4000-8000-000000000001",
+    "subdomain": "democlinic",
+    "name": "Demo Vision Clinic"
+  },
+  "branches": [
+    { "id": "f0000001-0000-4000-8000-0000000000b1", "name": "Central Rooms" },
+    { "id": "f0000001-0000-4000-8000-0000000000b2", "name": "Riverside Rooms" }
+  ],
+  "patients": [
+    {
+      "id": "f0000001-0000-4000-8000-0000000000c1",
+      "given_name": "Sam",
+      "family_name": "Example",
+      "sex": "MALE",
+      "date_of_birth": "1980-01-01",
+      "phone": "+100000000001",
+      "national_id": "TEST-0000001",
+      "scenario": "cash self-pay sample"
+    },
+    {
+      "id": "f0000001-0000-4000-8000-0000000000c2",
+      "given_name": "Robin",
+      "family_name": "Testcase",
+      "sex": "FEMALE",
+      "date_of_birth": "1975-06-15",
+      "phone": "+100000000002",
+      "national_id": "TEST-0000002",
+      "scenario": "medical aid sample"
+    }
+  ],
+  "invoices": [
+    {
+      "id": "f0000001-0000-4000-8000-000000000a01",
+      "patient_id": "f0000001-0000-4000-8000-0000000000c1",
+      "scenario": "full_cash",
+      "patient_due_minor": 5000,
+      "currency": "USD"
+    },
+    {
+      "id": "f0000001-0000-4000-8000-000000000a02",
+      "patient_id": "f0000001-0000-4000-8000-0000000000c2",
+      "scenario": "full_cash",
+      "patient_due_minor": 8000,
+      "currency": "USD"
+    }
+  ],
+  "holds": {
+    "mobile_money": "pending shell only (no live provider integration)",
+    "fiscal_number": "none (fiscalisation held)"
+  }
+}

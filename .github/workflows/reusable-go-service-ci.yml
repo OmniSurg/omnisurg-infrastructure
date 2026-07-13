@@ -1,0 +1,140 @@
+# Reusable CI for every OmniSurg Go service (the 12 services plus admin-bff).
+#
+# Called by each service repo's own caller workflow (deploy/ci-templates/
+# go-service.ci.yml, copied into that repo's .github/workflows/ by plan-ab).
+# A reusable `workflow_call` workflow cannot be push-triggered on its own, so
+# each code repo carries a thin caller that `uses:` this file.
+#
+# What it does:
+#   - runs the service local gate: make lint && make generate-check && make test
+#     && make build (the same gate a developer runs before push).
+#   - on a push to develop or main ONLY, builds the service container and pushes
+#     it to the PRIVATE GitHub Container Registry, tagged with the immutable
+#     commit :sha plus a moving :staging (develop) or :prod (main) tag.
+#
+# CRITICAL IMAGE-NAME CONTRACT (do not change without changing the compose
+# stacks): the pushed image is ghcr.io/${{ github.repository }} LOWERCASED, i.e.
+#   ghcr.io/omnisurg/<repo-name>            e.g. ghcr.io/omnisurg/omnisurg-identity-service
+# This MUST match, byte for byte, the pull refs in
+#   deploy/production/docker-compose.yml  ->  ghcr.io/omnisurg/omnisurg-identity-service:${IMAGE_TAG:-prod}
+#   deploy/staging/docker-compose.yml     ->  ghcr.io/omnisurg/omnisurg-identity-service:${IMAGE_TAG:-staging}
+# docker/metadata-action lowercases the owner and repo for us, so
+# OmniSurg/omnisurg-identity-service becomes ghcr.io/omnisurg/omnisurg-identity-service.
+# No secret is ever baked into the image; all runtime secrets are injected on the
+# VPS through per-service env files (spec section 5/7).
+name: reusable-go-service-ci
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile:
+        description: "Path to the Dockerfile used to build the deploy image."
+        required: false
+        type: string
+        default: Dockerfile
+      build_context:
+        description: "Docker build context. Defaults to the repo root."
+        required: false
+        type: string
+        default: "."
+      proto_version:
+        description: "Published omnisurg-proto/gen/go version to resolve in CI."
+        required: false
+        type: string
+        default: v0.8.0
+      go_common_version:
+        description: "Published omnisurg-go-common version to resolve in CI."
+        required: false
+        type: string
+        default: v0.2.3
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Local gate (lint, generate-check, test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The service go.mod carries `replace ... => ../omnisurg-go-common` and
+      # `replace ... => ../omnisurg-proto/gen/go` for developer builds against the
+      # sibling checkouts. Those paths do not exist in this isolated CI checkout,
+      # so drop the local replaces and pin the published shared-module versions
+      # (the libraries are published before any service). This also normalizes
+      # any placeholder proto pseudo-version (v0.0.0-00010101...) to a real tag.
+      # generate-check only diffs internal/generated, internal/db, and the
+      # openapi.yaml, so the go.mod/go.sum edits here do not trip it.
+      - name: Resolve shared modules from published tags
+        env:
+          PROTO_VERSION: ${{ inputs.proto_version }}
+          GO_COMMON_VERSION: ${{ inputs.go_common_version }}
+        run: |
+          set -euo pipefail
+          # Drop EVERY local shared replace first (no-op if absent) so no dangling
+          # replace is left pointing at a nonexistent sibling while a later go
+          # command loads the module graph. Only then pin the versions actually
+          # required by this module.
+          go mod edit -dropreplace=github.com/OmniSurg/omnisurg-proto/gen/go \
+                      -dropreplace=github.com/OmniSurg/omnisurg-go-common
+          pin() {
+            if go mod edit -json | jq -e --arg p "$1" '.Require[]? | select(.Path == $p)' >/dev/null; then
+              go get "$1@$2"
+            fi
+          }
+          pin github.com/OmniSurg/omnisurg-proto/gen/go "$PROTO_VERSION"
+          pin github.com/OmniSurg/omnisurg-go-common "$GO_COMMON_VERSION"
+          go mod tidy
+      - name: make lint
+        run: make lint
+      - name: make generate-check
+        run: make generate-check
+      - name: make test
+        run: make test
+      - name: make build
+        run: make build
+
+  image:
+    name: Build and push private ghcr image
+    # Only publish an image on a real push to a deploy branch. Pull requests run
+    # the gate above but never push an image.
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Lowercased ghcr.io/<owner>/<repo>. See the IMAGE-NAME CONTRACT above.
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ github.sha }}
+            type=raw,value=staging,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=raw,value=prod,enable=${{ github.ref == 'refs/heads/main' }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.build_context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

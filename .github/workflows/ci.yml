@@ -1,0 +1,39 @@
+name: ci
+
+# Stack-free CI gate for omnisurg-infrastructure. It runs on a fresh public
+# checkout with no secrets and no running stack: it validates the local and both
+# deploy compose stacks, vets the three Go stub modules, runs the seed and smoke
+# fail-closed selftests (the smoke selftest skips gracefully when the internal
+# live-stack script is not present in this checkout), and lints every workflow
+# and caller template with actionlint. This repo PROVIDES the reusable workflows,
+# so its own gate is standalone rather than a reusable caller.
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+
+      - name: Create the local env file from the committed example
+        run: cp .env.example .env
+
+      - name: Run the stack-free CI gate
+        run: make ci
+
+      - name: Install actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Lint the workflows and caller templates
+        run: make lint-actions

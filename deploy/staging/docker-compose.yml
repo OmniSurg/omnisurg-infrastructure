@@ -1,0 +1,484 @@
+# OmniSurg STAGING deploy stack.
+#
+# This file is placed on the VPS at /opt/omnisurg-staging/docker-compose.yml by the
+# staging bootstrap (plan-ab). It is fully ISOLATED from the production stack
+# (deploy/production) and from miride and pikes: its own Docker network
+# (omnisurg_staging_net), its own Postgres and Redis containers, its own Traefik on
+# distinct high ports (:9080 plain, :2053 TLS), its own host-bound volumes under
+# /opt/omnisurg-staging/data, and its own per-service secret env files under
+# /opt/omnisurg-staging/env. See spec 2026-07-13-two-environment-deploy-design section 3.
+#
+# NO build context: every app service pulls a pinned, PRIVATE ghcr image
+# (image-only deploy, spec section 5). The moving staging tag defaults to
+# :staging; the deploy job overrides IMAGE_TAG with the immutable commit :sha for
+# a pinned rollout and rollback.
+#
+# NO secrets are inline. Non-secret wiring (peer hostnames, ports, OMNISURG_ENV,
+# migration table names, CORS origins) is inline as environment:. Every secret
+# (database DSN with its per-service password, JWT secret, KEK, Afrosoft key,
+# Redis password, R2 credentials, Sentry DSN) is injected at runtime through a
+# per-service env_file that carries ONLY that service's own secrets (least
+# privilege, spec section 7). The env files are rendered by deploy/render-env.sh.
+#
+# Only Traefik publishes host ports. Postgres, Redis, and every app service are
+# reachable ONLY on the internal network, never from the host (a deploy-posture
+# hardening over the local stack, which publishes everything for dev). The BFF
+# is reached from the internet only through Traefik on api.staging.omnisurg.app.
+name: omnisurg-staging
+
+networks:
+  omnisurg_staging_net:
+    name: omnisurg_staging_net
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: omnisurg-staging-postgres
+    restart: unless-stopped
+    # POSTGRES_USER/PASSWORD/DB and the 12 per-service role passwords come from
+    # the rendered postgres env file; init.sh creates one role plus one database
+    # per service, each with its own password (one role per service).
+    env_file:
+      - path: /opt/omnisurg-staging/env/postgres.env
+        required: false
+    volumes:
+      - /opt/omnisurg-staging/data/postgres:/var/lib/postgresql/data
+      - /opt/omnisurg-staging/postgres/init.sh:/docker-entrypoint-initdb.d/01-omnisurg-init.sh:ro
+    networks: [omnisurg_staging_net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: omnisurg-staging-redis
+    restart: unless-stopped
+    # REDIS_PASSWORD comes from the rendered redis env file; the $$ escapes to a
+    # single $ so the container shell expands it (compose never sees the secret).
+    env_file:
+      - path: /opt/omnisurg-staging/env/redis.env
+        required: false
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    volumes:
+      - /opt/omnisurg-staging/data/redis:/data
+    networks: [omnisurg_staging_net]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  traefik:
+    image: traefik:v3.1
+    container_name: omnisurg-staging-traefik
+    restart: unless-stopped
+    command:
+      - "--configfile=/etc/traefik/traefik.yml"
+    ports:
+      - "9080:9080"
+      - "2053:2053"
+    volumes:
+      # No Docker socket is mounted: routing uses the file provider only (one
+      # api host to one backend), so Traefik needs no access to the daemon.
+      - /opt/omnisurg-staging/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - /opt/omnisurg-staging/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      # The Cloudflare Origin CA cert and key for api.omnisurg.app (Full strict).
+      - /opt/omnisurg-staging/tls:/etc/traefik/tls:ro
+    networks: [omnisurg_staging_net]
+    depends_on:
+      admin-bff:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 5
+
+  identity-service:
+    image: ghcr.io/omnisurg/omnisurg-identity-service:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-identity-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8081
+      OMNISURG_GRPC_PORT: 9081
+      OMNISURG_MIGRATIONS_TABLE: identity_schema_migrations
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/identity.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/api/v1/identity/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]
+
+  tenant-service:
+    image: ghcr.io/omnisurg/omnisurg-tenant-service:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-tenant-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8082
+      OMNISURG_GRPC_PORT: 9082
+      OMNISURG_MIGRATIONS_TABLE: tenant_schema_migrations
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/tenant.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/api/v1/tenant/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]
+
+  patient-service:
+    image: ghcr.io/omnisurg/omnisurg-patient-service:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-patient-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8083
+      OMNISURG_GRPC_PORT: 9083
+      OMNISURG_MIGRATIONS_TABLE: patient_schema_migrations
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/patient.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/api/v1/patient/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]
+
+  clinical-service:
+    image: ghcr.io/omnisurg/omnisurg-clinical-service:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-clinical-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8084
+      OMNISURG_GRPC_PORT: 9084
+      OMNISURG_MIGRATIONS_TABLE: clinical_schema_migrations
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/clinical.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8084/api/v1/clinical/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]
+
+  referral-service:
+    image: ghcr.io/omnisurg/omnisurg-referral-service:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-referral-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8085
+      OMNISURG_GRPC_PORT: 9085
+      OMNISURG_MIGRATIONS_TABLE: referral_schema_migrations
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/referral.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/api/v1/referral/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]
+
+  billing-service:
+    image: ghcr.io/omnisurg/omnisurg-billing-service:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-billing-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8086
+      OMNISURG_GRPC_PORT: 9086
+      OMNISURG_MIGRATIONS_TABLE: billing_schema_migrations
+      # FX hop: billing reaches currency over HTTP by service name.
+      OMNISURG_CURRENCY_BASE_URL: http://currency-service:8092
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/billing.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      currency-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8086/api/v1/billing/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]
+
+  payment-service:
+    image: ghcr.io/omnisurg/omnisurg-payment-service:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-payment-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8087
+      OMNISURG_GRPC_PORT: 9087
+      OMNISURG_MIGRATIONS_TABLE: payment_schema_migrations
+      # OMNISURG_BILLING_BASE_URL is intentionally UNSET: the optional billing
+      # cross-read is OFF in P1 (the BFF supplies invoice context). Mobile money
+      # stays a pending shell (HELD): no Paynow wiring here.
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/payment.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8087/api/v1/payment/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]
+
+  claims-service:
+    image: ghcr.io/omnisurg/omnisurg-claims-service:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-claims-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8088
+      OMNISURG_GRPC_PORT: 9088
+      OMNISURG_MIGRATIONS_TABLE: claims_schema_migrations
+      # Claims reaches billing over HTTP by service name in the claim build path.
+      OMNISURG_BILLING_BASE_URL: http://billing-service:8086
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/claims.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      billing-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8088/api/v1/claims/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]
+
+  notification-service:
+    image: ghcr.io/omnisurg/omnisurg-notification-service:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-notification-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8089
+      OMNISURG_GRPC_PORT: 9089
+      OMNISURG_MIGRATIONS_TABLE: notification_schema_migrations
+      # The Afrosoft base URL is non-secret env-specific wiring (the real
+      # production domain); the API key is a secret and comes from the env file.
+      OMNISURG_AFROSOFT_SENDER_ID: OmniSurg
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/notification.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8089/api/v1/notification/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]
+
+  scheduling-service:
+    image: ghcr.io/omnisurg/omnisurg-scheduling-service:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-scheduling-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8090
+      OMNISURG_GRPC_PORT: 9090
+      OMNISURG_MIGRATIONS_TABLE: scheduling_schema_migrations
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/scheduling.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/api/v1/scheduling/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]
+
+  audit-service:
+    image: ghcr.io/omnisurg/omnisurg-audit-service:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-audit-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8091
+      OMNISURG_GRPC_PORT: 9091
+      OMNISURG_MIGRATIONS_TABLE: audit_schema_migrations
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/audit.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8091/api/v1/audit/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]
+
+  currency-service:
+    image: ghcr.io/omnisurg/omnisurg-currency-service:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-currency-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8092
+      OMNISURG_GRPC_PORT: 9092
+      OMNISURG_MIGRATIONS_TABLE: currency_schema_migrations
+      # Redis caches the latest rate per pair; address by service name. The Redis
+      # password is a secret and comes from the env file. The ZimRate upstream
+      # URL is env-specific and also comes from the env file.
+      OMNISURG_REDIS_ADDR: redis:6379
+      OMNISURG_REDIS_DB: 0
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/currency.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8092/api/v1/currency/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]
+
+  admin-bff:
+    image: ghcr.io/omnisurg/omnisurg-admin-bff:${IMAGE_TAG:-staging}
+    container_name: omnisurg-staging-admin-bff
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: staging
+      OMNISURG_LOG_LEVEL: info
+      OMNISURG_HTTP_PORT: 8093
+      OMNISURG_GRPC_PORT: 9093
+      # gRPC peers by service name on omnisurg_staging_net. Every target here has a
+      # matching depends_on below (HG-B2: no BFF peer may be unwired).
+      OMNISURG_GRPC_IDENTITY_TARGET: identity-service:9081
+      OMNISURG_GRPC_TENANT_TARGET: tenant-service:9082
+      OMNISURG_GRPC_PATIENT_TARGET: patient-service:9083
+      OMNISURG_GRPC_CLINICAL_TARGET: clinical-service:9084
+      OMNISURG_GRPC_REFERRAL_TARGET: referral-service:9085
+      OMNISURG_GRPC_BILLING_TARGET: billing-service:9086
+      OMNISURG_GRPC_PAYMENT_TARGET: payment-service:9087
+      OMNISURG_GRPC_CLAIMS_TARGET: claims-service:9088
+      OMNISURG_GRPC_NOTIFICATION_TARGET: notification-service:9089
+      OMNISURG_GRPC_SCHEDULING_TARGET: scheduling-service:9090
+      OMNISURG_GRPC_CURRENCY_TARGET: currency-service:9092
+      OMNISURG_GRPC_AUDIT_TARGET: audit-service:9091
+      # Login passthrough hits identity REST by service name.
+      OMNISURG_IDENTITY_BASE_URL: http://identity-service:8081
+      # The staff web (per-practice wildcard) and provider portal are served from
+      # Cloudflare Pages; the BFF allows the provider admin origin here and
+      # resolves per-practice staff-web origins per tenant at runtime.
+      OMNISURG_CORS_ORIGINS: https://admin.staging.omnisurg.app
+    env_file:
+      - path: /opt/omnisurg-staging/env/admin-bff.env
+        required: false
+    depends_on:
+      identity-service:
+        condition: service_healthy
+      tenant-service:
+        condition: service_healthy
+      patient-service:
+        condition: service_healthy
+      clinical-service:
+        condition: service_healthy
+      referral-service:
+        condition: service_healthy
+      billing-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      claims-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+      scheduling-service:
+        condition: service_healthy
+      currency-service:
+        condition: service_healthy
+      audit-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8093/healthz > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_staging_net]

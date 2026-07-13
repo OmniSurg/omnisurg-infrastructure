@@ -1,0 +1,139 @@
+# Reusable CI plus GATED Cloudflare Pages deploy for an OmniSurg web app.
+#
+# One file serves BOTH staff-web and provider-portal: the caller passes the
+# Cloudflare Pages project name as an input, and the environment-specific VITE_*
+# build values come from environment-scoped variables/secrets (resolved once a
+# deploy job binds its Environment). Called by deploy/ci-templates/web-app.ci.yml,
+# copied into each web repo's .github/workflows/ by plan-ab.
+#
+# What it does:
+#   - build-test job (every push and PR): pnpm install --frozen-lockfile, then
+#     lint, typecheck, codegen-check, test, build, and the Playwright e2e suite.
+#   - deploy-staging / deploy-production jobs: rebuild with the env-specific
+#     VITE_* values (Vite bakes env at build time, so the tested build cannot be
+#     reused for a different environment) and publish to Cloudflare Pages via
+#     Wrangler. develop publishes to the staging alias (--branch develop);
+#     main publishes production (--branch main).
+#
+# GATE MODEL (spec section 12): EVERY deploy job carries, on the SAME job, BOTH
+#   - if: <branch> && vars.DEPLOY_<ENV>_ENABLED == 'true'
+#   - environment: staging | production   (production has the required-reviewer
+#     protection rule, so its Pages publish also pauses for the approval click)
+#
+# Wrangler authenticates with the Cloudflare API token and account id, held as
+# Environment-scoped secrets. No secret is committed.
+name: reusable-web-app-ci
+
+on:
+  workflow_call:
+    inputs:
+      pages_project:
+        description: "Cloudflare Pages project name (e.g. omnisurg-staff-web)."
+        required: true
+        type: string
+      node_version:
+        description: "Node.js version."
+        required: false
+        type: string
+        default: "20"
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        description: "Cloudflare API token scoped to Pages (Environment-scoped)."
+        required: false
+      CLOUDFLARE_ACCOUNT_ID:
+        description: "Cloudflare account id (Environment-scoped)."
+        required: false
+      VITE_SENTRY_DSN:
+        description: "Sentry DSN baked into the build (Environment-scoped, per env)."
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Codegen check
+        run: pnpm codegen-check
+      - name: Unit tests
+        run: pnpm test
+      - name: Build
+        run: pnpm build
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+      - name: End to end tests
+        run: pnpm test:e2e
+
+  deploy-staging:
+    name: Deploy to staging (Cloudflare Pages)
+    if: github.ref == 'refs/heads/develop' && vars.DEPLOY_STAGING_ENABLED == 'true'
+    environment: staging
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build for staging
+        # Env-specific VITE_* values come from the staging Environment (vars +
+        # secrets). Vite bakes these at build time.
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+        run: pnpm build
+      - name: Publish to Cloudflare Pages (staging alias)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          pnpm exec wrangler pages deploy dist
+          --project-name ${{ inputs.pages_project }}
+          --branch develop
+
+  deploy-production:
+    name: Deploy to production (Cloudflare Pages)
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_PRODUCTION_ENABLED == 'true'
+    environment: production
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build for production
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+        run: pnpm build
+      - name: Publish to Cloudflare Pages (production)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          pnpm exec wrangler pages deploy dist
+          --project-name ${{ inputs.pages_project }}
+          --branch main

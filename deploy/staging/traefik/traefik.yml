@@ -1,0 +1,40 @@
+# Traefik v3 static configuration for the OmniSurg STAGING origin.
+#
+# Placed on the VPS at /opt/omnisurg-staging/traefik/traefik.yml. This Traefik
+# terminates the Cloudflare-to-origin TLS for api.staging.omnisurg.app only
+# (Cloudflare Full strict); the staff web (per-practice wildcard) and the
+# provider portal are served from Cloudflare Pages and never reach the VPS.
+#
+# Ports are distinct from production (:9080 plain, :2053 TLS) so the two isolated
+# stacks coexist on the one VPS. Production Traefik terminates TLS on :8443;
+# staging uses :2053, another Cloudflare-supported proxied-origin HTTPS port, so
+# both origins sit behind Cloudflare Full strict. No API dashboard is exposed and
+# no Docker socket
+# is mounted: the single api route is defined by the file provider (dynamic.yml).
+# The ping endpoint is bound to an internal, unpublished entrypoint.
+
+ping:
+  entryPoint: traefik
+
+entryPoints:
+  web:
+    address: ":9080"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":2053"
+  # Internal-only entrypoint for the ping healthcheck; not published to the host.
+  traefik:
+    address: ":9082"
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+
+log:
+  level: INFO
+accessLog: {}

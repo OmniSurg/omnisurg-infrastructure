@@ -1,0 +1,117 @@
+# Reusable, GATED backend deploy for one OmniSurg service to the VPS.
+#
+# Called by a service repo's caller (deploy/ci-templates/go-service.ci.yml) after
+# the image job has pushed the pinned :sha image to ghcr. This file carries BOTH
+# deploy jobs (staging and production); each selects itself by branch. The web
+# apps do NOT use this file: they deploy to Cloudflare Pages inside
+# reusable-web-app-ci.yml.
+#
+# GATE MODEL (spec section 12): a push can never deploy before that environment
+# is bootstrapped. EVERY deploy job below carries, on the SAME job:
+#   - if: <branch> && vars.DEPLOY_<ENV>_ENABLED == 'true'   (the enable guard,
+#     a repository variable set to true only after that env's manual bootstrap)
+#   - environment: staging | production                     (the Environment
+#     binding; the production Environment additionally has a required-reviewer
+#     protection rule, so the production job pauses for the manual approval click)
+# The environment is chosen by branch, not by input, precisely so both guards are
+# static and visible on one job for review.
+#
+# The deploy connects to the VPS over SSH using an Environment-scoped deploy key.
+# The VPS host, user, and port are secrets (never the literal IP in this file;
+# spec section 8.1 scans this YAML). The mechanics live in the reviewed,
+# shellcheck-clean deploy/deploy-service.sh in omnisurg-infrastructure, scp'd to
+# the host at deploy time so the run: blocks stay simple. The ghcr read-only pull
+# token travels on stdin, never in argv.
+name: reusable-deploy
+
+on:
+  workflow_call:
+    inputs:
+      compose_service:
+        description: "Service name inside the env docker-compose.yml (e.g. identity-service), NOT the repo name."
+        required: true
+        type: string
+      image_tag:
+        description: "Immutable commit sha to pin this rollout to (the caller passes github.sha)."
+        required: true
+        type: string
+    secrets:
+      VPS_HOST:
+        description: "VPS hostname. Never the literal IP."
+        required: true
+      VPS_USER:
+        description: "SSH user for this environment (omnisurg or omnisurg-staging)."
+        required: true
+      VPS_PORT:
+        description: "SSH port."
+        required: true
+      VPS_SSH_KEY:
+        description: "Private SSH deploy key for this environment."
+        required: true
+      VPS_KNOWN_HOSTS:
+        description: "Pinned known_hosts line(s) for the VPS (StrictHostKeyChecking=yes)."
+        required: true
+      GHCR_READ_USER:
+        description: "GitHub user owning the read-only ghcr pull token."
+        required: true
+      GHCR_READ_TOKEN:
+        description: "Read-only ghcr pull token used by the VPS to pull the private image."
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-staging:
+    name: Deploy to staging
+    if: github.ref == 'refs/heads/develop' && vars.DEPLOY_STAGING_ENABLED == 'true'
+    environment: staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch deploy mechanics
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/omnisurg-infrastructure
+          ref: main
+          path: infra
+      - name: Deploy service
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          GHCR_READ_USER: ${{ secrets.GHCR_READ_USER }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          COMPOSE_SERVICE: ${{ inputs.compose_service }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          ENV_DIR: /opt/omnisurg-staging
+        run: infra/deploy/ssh-deploy.sh
+        shell: bash
+
+  deploy-production:
+    name: Deploy to production
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_PRODUCTION_ENABLED == 'true'
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch deploy mechanics
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/omnisurg-infrastructure
+          ref: main
+          path: infra
+      - name: Deploy service
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          GHCR_READ_USER: ${{ secrets.GHCR_READ_USER }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          COMPOSE_SERVICE: ${{ inputs.compose_service }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          ENV_DIR: /opt/omnisurg
+        run: infra/deploy/ssh-deploy.sh
+        shell: bash

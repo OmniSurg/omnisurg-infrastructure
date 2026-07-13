@@ -1,0 +1,40 @@
+# CALLER TEMPLATE for an OmniSurg web app repo (staff-web, provider-portal).
+#
+# plan-ab copies THIS file into the target repo's .github/workflows/ci.yml BEFORE
+# the repo's first orphan commit, so the first push runs CI (and, once the
+# environment is bootstrapped and DEPLOY_<ENV>_ENABLED is set, deploys to
+# Cloudflare Pages). A reusable `workflow_call` workflow cannot be push-triggered
+# on its own, so every code repo carries this thin caller.
+#
+# BEFORE copying, set the ONE placeholder below:
+#   pages_project:  the Cloudflare Pages project name for this app
+#                   (e.g. omnisurg-staff-web or omnisurg-provider-portal).
+#
+# The env-specific VITE_* build values and the Cloudflare credentials are read
+# from the staging/production GitHub Environments by the reusable workflow; no
+# secret or host literal lives in this file (spec 8.1).
+name: ci
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Build, test, Playwright e2e on every push and PR; the reusable workflow's
+  # GATED deploy jobs (staging on develop, production on main) publish to
+  # Cloudflare Pages, each carrying its own `if: vars.DEPLOY_<ENV>_ENABLED` guard
+  # AND its `environment:` binding; production is approval-protected.
+  ci:
+    uses: OmniSurg/omnisurg-infrastructure/.github/workflows/reusable-web-app-ci.yml@main
+    with:
+      # REPLACE with this app's Cloudflare Pages project name.
+      pages_project: REPLACE-WITH-PAGES-PROJECT-NAME
+    secrets: inherit

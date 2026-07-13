@@ -1,0 +1,28 @@
+# OmniSurg Cloudflare Terraform: variable values TEMPLATE.
+#
+# Copy to terraform.tfvars (gitignored) and fill every value at apply time on the
+# operator's machine. NAMES and SAFE PLACEHOLDERS ONLY live here; NEVER commit a
+# real token, account id, zone id, or origin host. This config is applied only
+# during the gated bootstrap (plan-ab).
+
+# Cloudflare API token, scoped to DNS edit, Pages, and Cloudflare for SaaS custom
+# hostnames. Supplied by the user, per field.
+cloudflare_api_token = "replace-with-cloudflare-api-token"
+
+# Cloudflare account and zone ids for omnisurg.app.
+cloudflare_account_id = "replace-with-cloudflare-account-id"
+cloudflare_zone_id    = "replace-with-cloudflare-zone-id"
+
+# The VPS origin the proxied api.* records resolve to. Supplied here only, never
+# committed; the literal origin address lives in no tracked file.
+vps_host = "replace-with-vps-origin-address"
+
+# Origin ports default to 8443 (production) and 2053 (staging) and normally need
+# no override. Uncomment only to change them to another Cloudflare-supported
+# proxied-origin HTTPS port.
+# prod_origin_port    = 8443
+# staging_origin_port = 2053
+
+# The staff-web Pages default *.pages.dev fallback hostnames (no scheme).
+staff_web_pages_fallback_hostname         = "replace-with-staff-web-pages-dev-hostname"
+staff_web_staging_pages_fallback_hostname = "replace-with-staff-web-staging-pages-dev-hostname"

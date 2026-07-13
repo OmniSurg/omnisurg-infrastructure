@@ -1,0 +1,513 @@
+# Overlay: the OmniSurg application service containers, layered on top of
+# compose/docker-compose.local.yml (postgres, redis, traefik, mailhog, stubs).
+# Compose merges the two files; run with both -f flags (the Makefile COMPOSE
+# variable does this). The base file owns the shared infra and the network;
+# this overlay holds only the app containers.
+#
+# Build strategy (ADR 0003): each image builds with the omnisurg PARENT dir as
+# the context (../.. from this compose/ dir) and a per-service Dockerfile.compose
+# so the go.mod replace directives (../omnisurg-go-common, ../omnisurg-proto/gen/go)
+# resolve unchanged. The parent-root .dockerignore keeps the context small.
+#
+# Chunk 1 shipped identity-service. Chunks 2-3 add the remaining 12 app
+# services (11 services plus admin-bff) and Traefik routing for the local hosts.
+#
+# Per-service notes:
+# - DB services run their own migrations on start (entrypoint -> golang-migrate
+#   against <svc>_schema_migrations) then serve HTTP plus gRPC.
+# - admin-bff owns NO database: no migrate step, it dials its gRPC peers by
+#   compose service name on omnisurg_net.
+# - billing reaches currency over HTTP for the FX hop
+#   (OMNISURG_CURRENCY_BASE_URL=http://currency-service:8092).
+# - claims reaches billing over HTTP (OMNISURG_BILLING_BASE_URL).
+# - notification reaches the afrosoft-stub; currency reaches the zimrate-stub;
+#   payment depends on the paynow-stub for shape only (HELD: no live Paynow).
+# - Health routes: most services serve /api/v1/<svc>/health (the gin group
+#   prefix plus /health). admin-bff serves /healthz.
+name: omnisurg
+
+networks:
+  # Same name as the base file so compose merges them into one network, not two.
+  omnisurg_net:
+    name: omnisurg_net
+
+services:
+  identity-service:
+    build:
+      context: ../..
+      dockerfile: omnisurg-identity-service/Dockerfile.compose
+    image: omnisurg-identity-service:local
+    container_name: omnisurg-identity-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8081
+      OMNISURG_GRPC_PORT: 9081
+      # In-network DB address uses the compose service name, not localhost.
+      OMNISURG_DATABASE_URL: postgres://omnisurg_identity:${POSTGRES_PASSWORD:-omnisurg-local-only}@postgres:5432/omnisurg_identity?sslmode=disable
+      OMNISURG_MIGRATIONS_TABLE: identity_schema_migrations
+      # Non-secret local defaults; one place shared across all services. To use a
+      # different local JWT secret or KEK, set these in the gitignored infra .env
+      # (one place for the whole stack) per the no-unauthorized-env-change rule.
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      OMNISURG_JWT_TTL_MINUTES: ${OMNISURG_JWT_TTL_MINUTES:-60}
+      OMNISURG_KEK_BASE64: ${OMNISURG_KEK_BASE64:-bG9jYWwtZGV2LWtlay0wMDAwMDAwMDAwMDAwMDAwMDA=}
+      OMNISURG_INTERNAL_API_KEY: ${OMNISURG_INTERNAL_API_KEY:-local-internal-key-change-me}
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_IDENTITY_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/api/v1/identity/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8081:8081"
+      - "9081:9081"
+
+  tenant-service:
+    build:
+      context: ../..
+      dockerfile: omnisurg-tenant-service/Dockerfile.compose
+    image: omnisurg-tenant-service:local
+    container_name: omnisurg-tenant-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8082
+      OMNISURG_GRPC_PORT: 9082
+      OMNISURG_DATABASE_URL: postgres://omnisurg_tenant:${POSTGRES_PASSWORD:-omnisurg-local-only}@postgres:5432/omnisurg_tenant?sslmode=disable
+      OMNISURG_MIGRATIONS_TABLE: tenant_schema_migrations
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/api/v1/tenant/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8082:8082"
+      - "9082:9082"
+
+  patient-service:
+    build:
+      context: ../..
+      dockerfile: omnisurg-patient-service/Dockerfile.compose
+    image: omnisurg-patient-service:local
+    container_name: omnisurg-patient-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8083
+      OMNISURG_GRPC_PORT: 9083
+      OMNISURG_DATABASE_URL: postgres://omnisurg_patient:${POSTGRES_PASSWORD:-omnisurg-local-only}@postgres:5432/omnisurg_patient?sslmode=disable
+      OMNISURG_MIGRATIONS_TABLE: patient_schema_migrations
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      OMNISURG_KEK_BASE64: ${OMNISURG_KEK_BASE64:-bG9jYWwtZGV2LWtlay0wMDAwMDAwMDAwMDAwMDAwMDA=}
+      OMNISURG_INTERNAL_API_KEY: ${OMNISURG_INTERNAL_API_KEY:-local-internal-key-change-me}
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/api/v1/patient/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8083:8083"
+      - "9083:9083"
+
+  clinical-service:
+    build:
+      context: ../..
+      dockerfile: omnisurg-clinical-service/Dockerfile.compose
+    image: omnisurg-clinical-service:local
+    container_name: omnisurg-clinical-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8084
+      OMNISURG_GRPC_PORT: 9084
+      OMNISURG_DATABASE_URL: postgres://omnisurg_clinical:${POSTGRES_PASSWORD:-omnisurg-local-only}@postgres:5432/omnisurg_clinical?sslmode=disable
+      OMNISURG_MIGRATIONS_TABLE: clinical_schema_migrations
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      OMNISURG_INTERNAL_API_KEY: ${OMNISURG_INTERNAL_API_KEY:-local-internal-key-change-me}
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8084/api/v1/clinical/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8084:8084"
+      - "9084:9084"
+
+  referral-service:
+    build:
+      context: ../..
+      dockerfile: omnisurg-referral-service/Dockerfile.compose
+    image: omnisurg-referral-service:local
+    container_name: omnisurg-referral-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8085
+      OMNISURG_GRPC_PORT: 9085
+      OMNISURG_DATABASE_URL: postgres://omnisurg_referral:${POSTGRES_PASSWORD:-omnisurg-local-only}@postgres:5432/omnisurg_referral?sslmode=disable
+      OMNISURG_MIGRATIONS_TABLE: referral_schema_migrations
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      OMNISURG_INTERNAL_API_KEY: ${OMNISURG_INTERNAL_API_KEY:-local-internal-key-change-me}
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/api/v1/referral/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8085:8085"
+      - "9085:9085"
+
+  billing-service:
+    build:
+      context: ../..
+      dockerfile: omnisurg-billing-service/Dockerfile.compose
+    image: omnisurg-billing-service:local
+    container_name: omnisurg-billing-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8086
+      OMNISURG_GRPC_PORT: 9086
+      OMNISURG_DATABASE_URL: postgres://omnisurg_billing:${POSTGRES_PASSWORD:-omnisurg-local-only}@postgres:5432/omnisurg_billing?sslmode=disable
+      OMNISURG_MIGRATIONS_TABLE: billing_schema_migrations
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      OMNISURG_INTERNAL_API_KEY: ${OMNISURG_INTERNAL_API_KEY:-local-internal-key-change-me}
+      # FX hop: billing reaches currency over HTTP by service name.
+      OMNISURG_CURRENCY_BASE_URL: http://currency-service:8092
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      currency-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8086/api/v1/billing/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8086:8086"
+      - "9086:9086"
+
+  payment-service:
+    build:
+      context: ../..
+      dockerfile: omnisurg-payment-service/Dockerfile.compose
+    image: omnisurg-payment-service:local
+    container_name: omnisurg-payment-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8087
+      OMNISURG_GRPC_PORT: 9087
+      OMNISURG_DATABASE_URL: postgres://omnisurg_payment:${POSTGRES_PASSWORD:-omnisurg-local-only}@postgres:5432/omnisurg_payment?sslmode=disable
+      OMNISURG_MIGRATIONS_TABLE: payment_schema_migrations
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      # NOTE: OMNISURG_BILLING_BASE_URL is intentionally UNSET for payment-service.
+      # The optional billing cross-read is OFF by default in P1 (per the platform
+      # design and the payment-service docs): the admin-bff supplies the invoice
+      # context and payment trusts the request, recording cash and advancing the
+      # per-invoice paid total with NO live billing call. On the BFF gRPC path the
+      # payment service forwards no caller bearer token, so enabling the read made
+      # billing return 401 and hard-fail recordPayment with PAYMENT_BILLING_UNAVAILABLE.
+      # Only claims-service keeps OMNISURG_BILLING_BASE_URL set (its claim-build path).
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # HELD: mobile money is a pending shell. The paynow-stub is present for
+      # shape only; payment makes no live Paynow call.
+      paynow-stub:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8087/api/v1/payment/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8087:8087"
+      - "9087:9087"
+
+  claims-service:
+    build:
+      context: ../..
+      dockerfile: omnisurg-claims-service/Dockerfile.compose
+    image: omnisurg-claims-service:local
+    container_name: omnisurg-claims-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8088
+      OMNISURG_GRPC_PORT: 9088
+      OMNISURG_DATABASE_URL: postgres://omnisurg_claims:${POSTGRES_PASSWORD:-omnisurg-local-only}@postgres:5432/omnisurg_claims?sslmode=disable
+      OMNISURG_MIGRATIONS_TABLE: claims_schema_migrations
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      # Claims reaches billing over HTTP by service name in the claim build path.
+      OMNISURG_BILLING_BASE_URL: http://billing-service:8086
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      billing-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8088/api/v1/claims/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8088:8088"
+      - "9088:9088"
+
+  notification-service:
+    build:
+      context: ../..
+      dockerfile: omnisurg-notification-service/Dockerfile.compose
+    image: omnisurg-notification-service:local
+    container_name: omnisurg-notification-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8089
+      OMNISURG_GRPC_PORT: 9089
+      OMNISURG_DATABASE_URL: postgres://omnisurg_notification:${POSTGRES_PASSWORD:-omnisurg-local-only}@postgres:5432/omnisurg_notification?sslmode=disable
+      OMNISURG_MIGRATIONS_TABLE: notification_schema_migrations
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      OMNISURG_INTERNAL_API_KEY: ${OMNISURG_INTERNAL_API_KEY:-local-internal-key-change-me}
+      # SMS goes through the afrosoft-stub locally. The API key is a required
+      # field; it comes from the gitignored infra .env (never committed). The
+      # stub does not validate it, but the service config requires it set.
+      OMNISURG_AFROSOFT_BASE_URL: ${OMNISURG_AFROSOFT_BASE_URL:-http://afrosoft-stub:9001}
+      OMNISURG_AFROSOFT_API_KEY: ${OMNISURG_AFROSOFT_API_KEY:-local-afrosoft-stub-key}
+      OMNISURG_AFROSOFT_SENDER_ID: ${OMNISURG_AFROSOFT_SENDER_ID:-OmniSurg}
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      afrosoft-stub:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8089/api/v1/notification/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8089:8089"
+      - "9089:9089"
+
+  scheduling-service:
+    build:
+      context: ../..
+      dockerfile: omnisurg-scheduling-service/Dockerfile.compose
+    image: omnisurg-scheduling-service:local
+    container_name: omnisurg-scheduling-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8090
+      OMNISURG_GRPC_PORT: 9090
+      OMNISURG_DATABASE_URL: postgres://omnisurg_scheduling:${POSTGRES_PASSWORD:-omnisurg-local-only}@postgres:5432/omnisurg_scheduling?sslmode=disable
+      OMNISURG_MIGRATIONS_TABLE: scheduling_schema_migrations
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      OMNISURG_INTERNAL_API_KEY: ${OMNISURG_INTERNAL_API_KEY:-local-internal-key-change-me}
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/api/v1/scheduling/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8090:8090"
+      - "9090:9090"
+
+  audit-service:
+    build:
+      context: ../..
+      dockerfile: omnisurg-audit-service/Dockerfile.compose
+    image: omnisurg-audit-service:local
+    container_name: omnisurg-audit-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8091
+      OMNISURG_GRPC_PORT: 9091
+      OMNISURG_DATABASE_URL: postgres://omnisurg_audit:${POSTGRES_PASSWORD:-omnisurg-local-only}@postgres:5432/omnisurg_audit?sslmode=disable
+      OMNISURG_MIGRATIONS_TABLE: audit_schema_migrations
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8091/api/v1/audit/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8091:8091"
+      - "9091:9091"
+
+  currency-service:
+    build:
+      context: ../..
+      dockerfile: omnisurg-currency-service/Dockerfile.compose
+    image: omnisurg-currency-service:local
+    container_name: omnisurg-currency-service
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8092
+      OMNISURG_GRPC_PORT: 9092
+      OMNISURG_DATABASE_URL: postgres://omnisurg_currency:${POSTGRES_PASSWORD:-omnisurg-local-only}@postgres:5432/omnisurg_currency?sslmode=disable
+      OMNISURG_MIGRATIONS_TABLE: currency_schema_migrations
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      # Redis caches the latest rate per pair; in-network address by service name.
+      OMNISURG_REDIS_ADDR: redis:6379
+      OMNISURG_REDIS_PASSWORD: ${REDIS_PASSWORD:-omnisurg-local-only}
+      OMNISURG_REDIS_DB: ${OMNISURG_REDIS_DB:-0}
+      # FX upstream is the zimrate-stub locally (config var is OMNISURG_ZIMRATE_URL).
+      OMNISURG_ZIMRATE_URL: http://zimrate-stub:9003
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      zimrate-stub:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8092/api/v1/currency/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8092:8092"
+      - "9092:9092"
+
+  admin-bff:
+    build:
+      context: ../..
+      dockerfile: omnisurg-admin-bff/Dockerfile.compose
+    image: omnisurg-admin-bff:local
+    container_name: omnisurg-admin-bff
+    restart: unless-stopped
+    environment:
+      OMNISURG_ENV: local
+      OMNISURG_LOG_LEVEL: ${OMNISURG_LOG_LEVEL:-info}
+      OMNISURG_HTTP_PORT: 8093
+      OMNISURG_GRPC_PORT: 9093
+      OMNISURG_JWT_SECRET: ${OMNISURG_JWT_SECRET:-local-dev-secret-change-me}
+      # gRPC peers by compose service name on omnisurg_net.
+      OMNISURG_GRPC_IDENTITY_TARGET: identity-service:9081
+      OMNISURG_GRPC_TENANT_TARGET: tenant-service:9082
+      OMNISURG_GRPC_PATIENT_TARGET: patient-service:9083
+      OMNISURG_GRPC_CLINICAL_TARGET: clinical-service:9084
+      OMNISURG_GRPC_REFERRAL_TARGET: referral-service:9085
+      OMNISURG_GRPC_BILLING_TARGET: billing-service:9086
+      OMNISURG_GRPC_PAYMENT_TARGET: payment-service:9087
+      OMNISURG_GRPC_CLAIMS_TARGET: claims-service:9088
+      OMNISURG_GRPC_NOTIFICATION_TARGET: notification-service:9089
+      OMNISURG_GRPC_SCHEDULING_TARGET: scheduling-service:9090
+      OMNISURG_GRPC_CURRENCY_TARGET: currency-service:9092
+      OMNISURG_GRPC_AUDIT_TARGET: audit-service:9091
+      # Login passthrough hits identity REST by service name.
+      OMNISURG_IDENTITY_BASE_URL: http://identity-service:8081
+      OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
+    depends_on:
+      identity-service:
+        condition: service_healthy
+      tenant-service:
+        condition: service_healthy
+      patient-service:
+        condition: service_healthy
+      clinical-service:
+        condition: service_healthy
+      referral-service:
+        condition: service_healthy
+      billing-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      claims-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+      scheduling-service:
+        condition: service_healthy
+      currency-service:
+        condition: service_healthy
+      audit-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8093/healthz > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
+    networks: [omnisurg_net]
+    ports:
+      - "8093:8093"
+      - "9093:9093"
+    # Chunk 3: Traefik routes the local BFF hosts (api/admin/practice.omnisurg.localhost)
+    # to admin-bff :8093 via the FILE provider in compose/traefik/dynamic.yml (the
+    # docker label provider cannot reach the Docker Desktop daemon socket on macOS).
+    # The web apps do not exist yet, so all three hosts route to the BFF API surface
+    # (documented in the local-bootstrap runbook).

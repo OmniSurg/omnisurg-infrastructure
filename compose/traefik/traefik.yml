@@ -1,0 +1,23 @@
+api:
+  dashboard: true
+  insecure: true
+
+ping:
+  entryPoint: traefik
+
+entryPoints:
+  web:
+    address: ":80"
+  traefik:
+    address: ":8080"
+
+providers:
+  docker:
+    network: omnisurg_net
+    exposedByDefault: false
+  file:
+    filename: /etc/traefik/dynamic.yml
+
+log:
+  level: INFO
+accessLog: {}

@@ -1,0 +1,111 @@
+name: omnisurg
+
+networks:
+  omnisurg_net:
+    name: omnisurg_net
+
+volumes:
+  omnisurg_postgres_data:
+  omnisurg_redis_data:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: omnisurg-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-omnisurg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-omnisurg-local-only}
+      POSTGRES_DB: ${POSTGRES_DB:-omnisurg_meta}
+    ports:
+      - "5432:5432"
+    volumes:
+      - omnisurg_postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-omnisurg-init.sql:ro
+    networks: [omnisurg_net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-omnisurg} -d ${POSTGRES_DB:-omnisurg_meta}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: omnisurg-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-omnisurg-local-only}"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - omnisurg_redis_data:/data
+    networks: [omnisurg_net]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-omnisurg-local-only}
+
+  traefik:
+    image: traefik:v3.1
+    container_name: omnisurg-traefik
+    restart: unless-stopped
+    command:
+      - "--configfile=/etc/traefik/traefik.yml"
+    ports:
+      - "80:80"
+      - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    networks: [omnisurg_net]
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 5
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: omnisurg-mailhog
+    restart: unless-stopped
+    ports:
+      - "${MAILHOG_HTTP_PORT:-8025}:8025"
+      - "${MAILHOG_SMTP_PORT:-1025}:1025"
+    networks: [omnisurg_net]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8025/api/v2/messages > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 5
+
+  afrosoft-stub:
+    build:
+      context: ../stubs/afrosoft
+    container_name: omnisurg-afrosoft-stub
+    restart: unless-stopped
+    ports:
+      - "${AFROSOFT_STUB_PORT:-9001}:9001"
+    networks: [omnisurg_net]
+
+  paynow-stub:
+    build:
+      context: ../stubs/paynow
+    container_name: omnisurg-paynow-stub
+    restart: unless-stopped
+    ports:
+      - "${PAYNOW_STUB_PORT:-9002}:9002"
+    networks: [omnisurg_net]
+
+  zimrate-stub:
+    build:
+      context: ../stubs/zimrate
+    container_name: omnisurg-zimrate-stub
+    restart: unless-stopped
+    ports:
+      - "${ZIMRATE_STUB_PORT:-9003}:9003"
+    networks: [omnisurg_net]

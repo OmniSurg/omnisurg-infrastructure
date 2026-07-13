@@ -1,0 +1,37 @@
+# Traefik v3 dynamic (file provider) configuration for OmniSurg STAGING.
+#
+# One host, one backend: api.staging.omnisurg.app terminates TLS on the websecure
+# entrypoint (:2053) with the Cloudflare Origin CA certificate and proxies to the
+# admin-bff HTTP surface (:8093) by its service name on omnisurg_staging_net. The
+# staff web and provider portal are on Cloudflare Pages and are NOT routed here.
+http:
+  routers:
+    bff-api:
+      rule: "Host(`api.staging.omnisurg.app`)"
+      entryPoints:
+        - websecure
+      service: bff
+      tls: {}
+
+  services:
+    bff:
+      loadBalancer:
+        servers:
+          - url: "http://admin-bff:8093"
+        healthCheck:
+          path: /healthz
+          interval: 10s
+          timeout: 3s
+
+tls:
+  certificates:
+    # The Cloudflare Origin CA cert and key for api.staging.omnisurg.app are
+    # placed on the VPS at /opt/omnisurg-staging/tls and mounted read-only. They
+    # are a runtime secret, never committed to the repo.
+    - certFile: /etc/traefik/tls/origin.pem
+      keyFile: /etc/traefik/tls/origin.key
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /etc/traefik/tls/origin.pem
+        keyFile: /etc/traefik/tls/origin.key

@@ -1,0 +1,30 @@
+# CALLER TEMPLATE for an OmniSurg shared Go LIBRARY repo (omnisurg-go-common,
+# omnisurg-proto). plan-ab copies THIS file into the target repo's
+# .github/workflows/ci.yml before the repo's first orphan commit, so the first
+# push runs the library gate. Libraries never deploy, so there is no deploy job.
+#
+# BEFORE copying, set module_dir for the repo:
+#   omnisurg-go-common -> module_dir: "."      (module at repo root)
+#   omnisurg-proto     -> module_dir: gen/go   (module in the gen/go subdirectory)
+#
+# Neither this file nor the reusable workflow carries the VPS IP or any secret.
+name: ci
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: OmniSurg/omnisurg-infrastructure/.github/workflows/reusable-go-library-ci.yml@main
+    with:
+      # REPLACE per repo: "." for go-common, gen/go for proto.
+      module_dir: "."
