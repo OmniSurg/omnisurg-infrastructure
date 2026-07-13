@@ -70,6 +70,15 @@ jobs:
         run: pnpm lint
       - name: Typecheck
         run: pnpm typecheck
+      # codegen reads the BFF SDL from the sibling admin-bff repo (the local
+      # monorepo layout). That sibling is absent in an isolated CI checkout, so
+      # fetch the published contract into the path codegen.ts expects. This also
+      # keeps the web app honest against the live published GraphQL contract.
+      - name: Fetch the published BFF GraphQL schema for codegen
+        run: |
+          mkdir -p ../omnisurg-admin-bff/docs/api-contract
+          curl -sfL https://raw.githubusercontent.com/OmniSurg/omnisurg-admin-bff/main/docs/api-contract/schema.graphql \
+            -o ../omnisurg-admin-bff/docs/api-contract/schema.graphql
       - name: Codegen check
         run: pnpm codegen-check
       - name: Unit tests
