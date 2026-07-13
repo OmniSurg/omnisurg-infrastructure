@@ -61,6 +61,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # Services generate their type-safe DB layer with sqlc, invoked as an
+      # installed binary (the Makefile notes `go run sqlc` fails to build its cgo
+      # pg_query dependency), so the runner needs sqlc on PATH before
+      # `make generate-check`. Pinned to the version developers use locally so the
+      # generated output matches byte for byte (no drift). admin-bff has no
+      # database and simply does not call sqlc.
+      - name: Install sqlc
+        uses: sqlc-dev/setup-sqlc@v4
+        with:
+          sqlc-version: "1.31.1"
       # The service go.mod carries `replace ... => ../omnisurg-go-common` and
       # `replace ... => ../omnisurg-proto/gen/go` for developer builds against the
       # sibling checkouts. Those paths do not exist in this isolated CI checkout,
