@@ -8,7 +8,8 @@
 #
 # What it does:
 #   - build-test job (every push and PR): pnpm install --frozen-lockfile, then
-#     lint, typecheck, codegen-check, test, build, and the Playwright e2e suite.
+#     lint, typecheck, codegen-check, test (vitest), and build. The Playwright
+#     e2e suite is a local / pre-deploy gate (it needs the live seeded stack).
 #   - deploy-staging / deploy-production jobs: rebuild with the env-specific
 #     VITE_* values (Vite bakes env at build time, so the tested build cannot be
 #     reused for a different environment) and publish to Cloudflare Pages via
@@ -73,10 +74,11 @@ jobs:
         run: pnpm test
       - name: Build
         run: pnpm build
-      - name: Install Playwright browsers
-        run: pnpm exec playwright install --with-deps chromium
-      - name: End to end tests
-        run: pnpm test:e2e
+      # The Playwright e2e suite (pnpm test:e2e) is NOT run here: it drives the
+      # app against the live seeded admin-bff, which a bare CI runner does not
+      # have. It stays a local / pre-deploy gate against the running stack, the
+      # same way the backend full-stack smoke/e2e is not part of a service's
+      # per-push CI (only the self-contained unit/vitest suite is).
 
   deploy-staging:
     name: Deploy to staging (Cloudflare Pages)
