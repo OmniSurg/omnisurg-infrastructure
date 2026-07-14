@@ -83,7 +83,9 @@ IDENTITY="${OMNISURG_IDENTITY_URL:-http://localhost:8081}"
 PATIENTSVC="${OMNISURG_PATIENT_URL:-http://localhost:8083}"
 BFF="${OMNISURG_BFF_URL:-http://localhost:8093}"
 
-TENANT_ID="$(jq -r '.tenant.id' "$FIXTURES")"
+# The synthetic tenant is normally onboarded through the provider portal, which
+# mints a fresh tenant id, so allow an override; fall back to the fixture id.
+TENANT_ID="${OMNISURG_SYNTHETIC_TENANT_ID:-$(jq -r '.tenant.id' "$FIXTURES")}"
 BRANCH_ID="${OMNISURG_SYNTHETIC_BRANCH_ID:-$(jq -r '.branches[0].id' "$FIXTURES")}"
 SERVICE_ID="${OMNISURG_SYNTHETIC_SERVICE_ID:-}"
 ADMIN_EMAIL="${OMNISURG_SYNTHETIC_ADMIN_EMAIL:-}"

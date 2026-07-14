@@ -470,6 +470,8 @@ services:
       OMNISURG_GRPC_AUDIT_TARGET: audit-service:9091
       # Login passthrough hits identity REST by service name.
       OMNISURG_IDENTITY_BASE_URL: http://identity-service:8081
+      # Base for the account activation link (local staff-web dev server).
+      OMNISURG_STAFF_WEB_URL_TEMPLATE: ${OMNISURG_STAFF_WEB_URL_TEMPLATE:-http://localhost:5173}
       OMNISURG_CORS_ORIGINS: ${OMNISURG_CORS_ORIGINS:-http://practice.omnisurg.localhost,http://admin.omnisurg.localhost}
     depends_on:
       identity-service:

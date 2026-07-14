@@ -443,6 +443,9 @@ services:
       OMNISURG_GRPC_AUDIT_TARGET: audit-service:9091
       # Login passthrough hits identity REST by service name.
       OMNISURG_IDENTITY_BASE_URL: http://identity-service:8081
+      # Base for the account activation link the BFF texts + shows in the portal.
+      # Staging serves staff-web on one fixed host (no per-practice subdomain).
+      OMNISURG_STAFF_WEB_URL_TEMPLATE: https://staff-staging.omnisurg.app
       # The staff web and provider portal are served from Cloudflare Pages
       # (dedicated staging projects). The BFF allows both staging Pages origins
       # here; production resolves per-practice staff-web origins per tenant.
