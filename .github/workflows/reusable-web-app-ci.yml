@@ -44,8 +44,8 @@ on:
       CLOUDFLARE_ACCOUNT_ID:
         description: "Cloudflare account id (Environment-scoped)."
         required: false
-      VITE_SENTRY_DSN:
-        description: "Sentry DSN baked into the build (Environment-scoped, per env)."
+      VITE_OMNISURG_SENTRY_DSN:
+        description: "Sentry DSN baked into the build (Environment-scoped, per env). Matches the VITE_OMNISURG_SENTRY_DSN var the apps read."
         required: false
 
 permissions:
@@ -110,18 +110,25 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build for staging
         # Env-specific VITE_* values come from the staging Environment (vars +
-        # secrets). Vite bakes these at build time.
+        # secrets). Vite bakes these at build time. The names MUST match what the
+        # apps read (src/shared/apollo/client.ts, main.tsx): a wrong VITE name
+        # silently ships a build that points at nothing.
         env:
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
-          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_OMNISURG_BFF_URL: ${{ vars.VITE_OMNISURG_BFF_URL }}
+          VITE_OMNISURG_TENANT_DEFAULT: ${{ vars.VITE_OMNISURG_TENANT_DEFAULT }}
+          VITE_OMNISURG_SENTRY_DSN: ${{ secrets.VITE_OMNISURG_SENTRY_DSN }}
         run: pnpm build
       - name: Publish to Cloudflare Pages (staging alias)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # The Pages project is per environment (dedicated staging vs production
+        # projects), so it comes from the bound Environment; the input is a
+        # fallback. The staging projects use production branch develop, so this
+        # publish lands on the canonical <project>.pages.dev URL.
         run: >-
           pnpm exec wrangler pages deploy dist
-          --project-name ${{ inputs.pages_project }}
+          --project-name ${{ vars.CLOUDFLARE_PAGES_PROJECT || inputs.pages_project }}
           --branch develop
 
   deploy-production:
@@ -143,8 +150,9 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build for production
         env:
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
-          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_OMNISURG_BFF_URL: ${{ vars.VITE_OMNISURG_BFF_URL }}
+          VITE_OMNISURG_TENANT_DEFAULT: ${{ vars.VITE_OMNISURG_TENANT_DEFAULT }}
+          VITE_OMNISURG_SENTRY_DSN: ${{ secrets.VITE_OMNISURG_SENTRY_DSN }}
         run: pnpm build
       - name: Publish to Cloudflare Pages (production)
         env:
@@ -152,5 +160,5 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: >-
           pnpm exec wrangler pages deploy dist
-          --project-name ${{ inputs.pages_project }}
+          --project-name ${{ vars.CLOUDFLARE_PAGES_PROJECT || inputs.pages_project }}
           --branch main
