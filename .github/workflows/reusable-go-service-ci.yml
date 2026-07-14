@@ -153,6 +153,12 @@ jobs:
           context: ${{ inputs.build_context }}
           file: ${{ inputs.dockerfile }}
           platforms: linux/amd64,linux/arm64
+          # Feed the SAME shared-module versions the test job pins into the image
+          # build, so the deploy image resolves the intended proto/go-common (the
+          # Dockerfile ARG defaults are only a local-build fallback).
+          build-args: |
+            PROTO_VERSION=${{ inputs.proto_version }}
+            GO_COMMON_VERSION=${{ inputs.go_common_version }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
