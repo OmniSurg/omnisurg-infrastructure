@@ -446,7 +446,7 @@ services:
       # The staff web and provider portal are served from Cloudflare Pages
       # (dedicated staging projects). The BFF allows both staging Pages origins
       # here; production resolves per-practice staff-web origins per tenant.
-      OMNISURG_CORS_ORIGINS: https://staff-web-staging.pages.dev,https://provider-portal-staging-70x.pages.dev
+      OMNISURG_CORS_ORIGINS: https://staff-staging.omnisurg.app,https://provider-staging.omnisurg.app,https://staff-web-staging.pages.dev,https://provider-portal-staging-70x.pages.dev
     env_file:
       - path: /opt/omnisurg-staging/env/admin-bff.env
         required: false
