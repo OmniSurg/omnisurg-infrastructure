@@ -75,10 +75,17 @@ jobs:
       # fetch the published contract into the path codegen.ts expects. This also
       # keeps the web app honest against the live published GraphQL contract.
       - name: Fetch the published BFF GraphQL schema for codegen
+        # Fetch the SDL from the SAME branch this app is being built on, so a
+        # develop build validates against the develop BFF contract and a main
+        # build against main (coordinated cross repo SDL changes land on develop
+        # first). Fall back to main for any other ref (for example a PR head).
         run: |
           mkdir -p ../omnisurg-admin-bff/docs/api-contract
-          curl -sfL https://raw.githubusercontent.com/OmniSurg/omnisurg-admin-bff/main/docs/api-contract/schema.graphql \
-            -o ../omnisurg-admin-bff/docs/api-contract/schema.graphql
+          BRANCH="${{ github.ref_name }}"
+          BASE="https://raw.githubusercontent.com/OmniSurg/omnisurg-admin-bff"
+          DEST="../omnisurg-admin-bff/docs/api-contract/schema.graphql"
+          curl -sfL "$BASE/$BRANCH/docs/api-contract/schema.graphql" -o "$DEST" \
+            || curl -sfL "$BASE/main/docs/api-contract/schema.graphql" -o "$DEST"
       - name: Codegen check
         run: pnpm codegen-check
       - name: Unit tests
