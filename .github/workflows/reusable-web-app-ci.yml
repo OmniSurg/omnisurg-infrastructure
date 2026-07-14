@@ -123,6 +123,7 @@ jobs:
         env:
           VITE_OMNISURG_BFF_URL: ${{ vars.VITE_OMNISURG_BFF_URL }}
           VITE_OMNISURG_TENANT_DEFAULT: ${{ vars.VITE_OMNISURG_TENANT_DEFAULT }}
+          VITE_OMNISURG_STAFF_WEB_URL_TEMPLATE: ${{ vars.VITE_OMNISURG_STAFF_WEB_URL_TEMPLATE }}
           VITE_OMNISURG_SENTRY_DSN: ${{ secrets.VITE_OMNISURG_SENTRY_DSN }}
         run: pnpm build
       - name: Publish to Cloudflare Pages (staging alias)
@@ -159,6 +160,7 @@ jobs:
         env:
           VITE_OMNISURG_BFF_URL: ${{ vars.VITE_OMNISURG_BFF_URL }}
           VITE_OMNISURG_TENANT_DEFAULT: ${{ vars.VITE_OMNISURG_TENANT_DEFAULT }}
+          VITE_OMNISURG_STAFF_WEB_URL_TEMPLATE: ${{ vars.VITE_OMNISURG_STAFF_WEB_URL_TEMPLATE }}
           VITE_OMNISURG_SENTRY_DSN: ${{ secrets.VITE_OMNISURG_SENTRY_DSN }}
         run: pnpm build
       - name: Publish to Cloudflare Pages (production)
