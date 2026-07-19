@@ -447,10 +447,13 @@ services:
       # Production serves staff-web per practice at <subdomain>.omnisurg.app, so
       # the BFF substitutes {subdomain} with the target practice's subdomain.
       OMNISURG_STAFF_WEB_URL_TEMPLATE: https://{subdomain}.omnisurg.app
-      # The staff web (per-practice wildcard) and provider portal are served from
-      # Cloudflare Pages; the BFF allows the provider admin origin here and
-      # resolves per-practice staff-web origins per tenant at runtime.
-      OMNISURG_CORS_ORIGINS: https://admin.omnisurg.app
+      # The staff web (per-practice subdomains) and provider portal are served from
+      # Cloudflare Pages. The BFF allows the provider admin origin plus the Pages
+      # preview origins explicitly, and allows every per-practice staff origin under
+      # the domain suffix below via a strict single-label suffix match, so a newly
+      # onboarded practice origin works with no BFF redeploy.
+      OMNISURG_CORS_ORIGINS: https://admin.omnisurg.app,https://staff-web-886.pages.dev,https://provider-portal-6od.pages.dev
+      OMNISURG_TENANT_DOMAIN_SUFFIX: omnisurg.app
     env_file:
       - path: /opt/omnisurg/env/admin-bff.env
         required: false
