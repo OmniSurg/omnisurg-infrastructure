@@ -27,7 +27,7 @@
 #   notification.env  DB DSN, JWT, INTERNAL_API_KEY, AFROSOFT_BASE_URL, AFROSOFT_API_KEY, [Sentry]
 #   scheduling.env    DB DSN, JWT, INTERNAL_API_KEY, [Sentry]
 #   audit.env         DB DSN, JWT, [Sentry]
-#   currency.env      DB DSN, JWT, REDIS_PASSWORD, ZIMRATE_URL, [Sentry]
+#   currency.env      DB DSN, JWT, REDIS_PASSWORD, ZIMRATE_URL, [ZIMRATE_API_KEY], [Sentry]
 #   admin-bff.env     JWT, R2 credentials, [Sentry]   (no database of its own)
 #
 # The host-level GHCR_READ_TOKEN is NOT rendered into any service file: it is used
@@ -185,6 +185,7 @@ emit() { # emit KEY VALUE  -> print KEY=VALUE only when VALUE is non-empty
   printf 'OMNISURG_JWT_SECRET=%s\n' "$OMNISURG_JWT_SECRET"
   printf 'OMNISURG_REDIS_PASSWORD=%s\n' "$OMNISURG_REDIS_PASSWORD"
   printf 'OMNISURG_ZIMRATE_URL=%s\n' "$OMNISURG_CURRENCY_ZIMRATE_URL"
+  emit OMNISURG_ZIMRATE_API_KEY "${OMNISURG_CURRENCY_ZIMRATE_API_KEY:-}"
   emit OMNISURG_SENTRY_DSN "${OMNISURG_CURRENCY_SENTRY_DSN:-}"
 } > "$OUT_DIR/currency.env"
 
@@ -197,6 +198,17 @@ emit() { # emit KEY VALUE  -> print KEY=VALUE only when VALUE is non-empty
   emit OMNISURG_R2_SECRET_ACCESS_KEY "${OMNISURG_R2_SECRET_ACCESS_KEY:-}"
   emit OMNISURG_R2_BUCKET "${OMNISURG_R2_BUCKET:-}"
   emit OMNISURG_SENTRY_DSN "${OMNISURG_ADMIN_BFF_SENTRY_DSN:-}"
+  # Cloudflare credentials for automatic per-practice web-address provisioning at
+  # onboarding (register the DNS record plus the Pages custom domain). When the
+  # token is absent the admin-bff selects a no-op provisioner, so staging (which
+  # sets no token) provisions nothing; only production supplies the token. Prefer a
+  # least-privilege token scoped to Zone DNS Edit on omnisurg.app plus Pages Edit.
+  emit OMNISURG_CLOUDFLARE_API_TOKEN "${OMNISURG_ADMIN_BFF_CLOUDFLARE_TOKEN:-}"
+  emit OMNISURG_CLOUDFLARE_ZONE_ID "${OMNISURG_CLOUDFLARE_ZONE_ID:-}"
+  emit OMNISURG_CLOUDFLARE_ACCOUNT_ID "${OMNISURG_CLOUDFLARE_ACCOUNT_ID:-}"
+  emit OMNISURG_STAFF_WEB_PAGES_PROJECT "${OMNISURG_STAFF_WEB_PAGES_PROJECT:-}"
+  emit OMNISURG_STAFF_WEB_PAGES_TARGET "${OMNISURG_STAFF_WEB_PAGES_TARGET:-}"
+  emit OMNISURG_TENANT_DOMAIN_SUFFIX "${OMNISURG_TENANT_DOMAIN_SUFFIX:-}"
 } > "$OUT_DIR/admin-bff.env"
 
 echo "render-env: wrote 15 env files to $OUT_DIR (postgres, redis, and 13 services)"

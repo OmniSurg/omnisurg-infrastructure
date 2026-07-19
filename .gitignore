@@ -50,3 +50,6 @@ NOTES.md
 stubs/afrosoft/afrosoft
 stubs/paynow/paynow
 stubs/zimrate/zimrate
+
+# Origin CA cert + private key material (per env), placed on the VPS Traefik.
+deploy/*/tls/
